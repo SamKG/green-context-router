@@ -30,15 +30,30 @@ def run_test():
     stream1 = torch.cuda.Stream()
     stream2 = torch.cuda.Stream()
     
+    start_event1 = torch.cuda.Event(enable_timing=True)
+    end_event1 = torch.cuda.Event(enable_timing=True)
+    start_event2 = torch.cuda.Event(enable_timing=True)
+    end_event2 = torch.cuda.Event(enable_timing=True)
+    
+    torch.cuda.synchronize()
     start = time.perf_counter()
+    
     with torch.cuda.stream(stream1):
+        start_event1.record(stream1)
         for _ in range(10):
             torch.matmul(a, b)
+        end_event1.record(stream1)
+        
     with torch.cuda.stream(stream2):
+        start_event2.record(stream2)
         for _ in range(10):
             torch.matmul(a, b)
+        end_event2.record(stream2)
+        
     torch.cuda.synchronize()
     print(f"Default Total time: {time.perf_counter() - start:.4f}s", flush=True)
+    print(f"  Stream 1 time: {start_event1.elapsed_time(end_event1):.2f} ms", flush=True)
+    print(f"  Stream 2 time: {start_event2.elapsed_time(end_event2):.2f} ms", flush=True)
 
     print("Running with disjoint Green Contexts (0 and 1)", flush=True)
     
@@ -48,18 +63,25 @@ def run_test():
     # Create stream 2 with GREEN_CTX = 1 (e.g. remainder SMs)
     stream2_green = create_green_stream(1)
     
+    torch.cuda.synchronize()
     start = time.perf_counter()
     
     with torch.cuda.stream(stream1_green):
+        start_event1.record(stream1_green)
         for _ in range(10):
             torch.matmul(a, b)
+        end_event1.record(stream1_green)
             
     with torch.cuda.stream(stream2_green):
+        start_event2.record(stream2_green)
         for _ in range(10):
             torch.matmul(a, b)
+        end_event2.record(stream2_green)
             
     torch.cuda.synchronize()
     print(f"Green Context Total time: {time.perf_counter() - start:.4f}s", flush=True)
+    print(f"  Stream 1 (8 SMs) time: {start_event1.elapsed_time(end_event1):.2f} ms", flush=True)
+    print(f"  Stream 2 (124 SMs) time: {start_event2.elapsed_time(end_event2):.2f} ms", flush=True)
 
 if __name__ == "__main__":
     run_test()
