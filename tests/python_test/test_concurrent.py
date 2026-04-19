@@ -74,10 +74,10 @@ def run_test():
     print(f"\nRunning with disjoint Green Contexts (0 and 1, {num_iters} iterations per stream)", flush=True)
     
     # Create stream 1 with GREEN_CTX = 0 (e.g. 8 SMs)
-    stream1_green = create_green_stream(0)
+    stream1_green = create_green_stream(10)
     
     # Create stream 2 with GREEN_CTX = 1 (e.g. remainder SMs)
-    stream2_green = create_green_stream(1)
+    stream2_green = create_green_stream(11)
     
     torch.cuda.synchronize()
     start = time.perf_counter()

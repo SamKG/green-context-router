@@ -21,13 +21,13 @@ fn init_tracing() {
 
 pub type CUstream = *mut std::ffi::c_void;
 
-static POOL: OnceLock<Vec<(usize, i32)>> = OnceLock::new();
+static POOL: OnceLock<Vec<(usize, i32, usize)>> = OnceLock::new();
 
 unsafe fn create_green_context_pair(
     dev: CUdevice,
     dev_res: &CUdevResource,
     sm_count: u32,
-) -> Result<(CUcontext, CUcontext), (cudaError_enum, &'static str)> {
+) -> Result<((CUcontext, CUgreenCtx), (CUcontext, CUgreenCtx)), (cudaError_enum, &'static str)> {
     let dev_sm = dev_res.__bindgen_anon_1.sm;
     let align = dev_sm.smCoscheduledAlignment;
 
@@ -99,14 +99,14 @@ unsafe fn create_green_context_pair(
         return Err((res, "cuCtxFromGreenCtx (2)"));
     }
 
-    Ok((new_ctx1, new_ctx2))
+    Ok(((new_ctx1, gctx1), (new_ctx2, gctx2)))
 }
 
-fn get_green_contexts() -> &'static [(usize, i32)] {
+fn get_green_contexts() -> &'static [(usize, i32, usize)] {
     POOL.get_or_init(|| unsafe {
         let mut dev: CUdevice = 0;
         if cuCtxGetDevice(&mut dev) != CUDA_SUCCESS {
-            return Vec::<(usize, i32)>::new();
+            return Vec::<(usize, i32, usize)>::new();
         }
 
         let mut max_sms: std::os::raw::c_int = 0;
@@ -116,10 +116,10 @@ fn get_green_contexts() -> &'static [(usize, i32)] {
             dev,
         ) != CUDA_SUCCESS
         {
-            return Vec::<(usize, i32)>::new();
+            return Vec::<(usize, i32, usize)>::new();
         }
 
-        let mut ctxs: Vec<(usize, i32)> = Vec::new();
+        let mut ctxs: Vec<(usize, i32, usize)> = Vec::new();
 
         let mut current_ctx: CUcontext = std::ptr::null_mut();
         let _ = cuCtxGetCurrent(&mut current_ctx);
@@ -135,13 +135,13 @@ fn get_green_contexts() -> &'static [(usize, i32)] {
                 "GREEN_CTX router: cuDeviceGetDevResource failed with error {:?}",
                 res
             );
-            return Vec::<(usize, i32)>::new();
+            return Vec::<(usize, i32, usize)>::new();
         }
 
         let step = 8;
         for sm_count in (step..=max_sms / 2).step_by(step as usize) {
             match create_green_context_pair(dev, &dev_res, sm_count as u32) {
-                Ok((ctx1, ctx2)) => {
+                Ok(((ctx1, gctx1), (ctx2, gctx2))) => {
                     tracing::info!(
                         "GREEN_CTX router: created green context pair ({}, {}) with SM counts ({}, {})",
                         ctxs.len(),
@@ -149,8 +149,8 @@ fn get_green_contexts() -> &'static [(usize, i32)] {
                         sm_count,
                         max_sms - sm_count
                     );
-                    ctxs.push((ctx1 as usize, sm_count));
-                    ctxs.push((ctx2 as usize, max_sms - sm_count));
+                    ctxs.push((ctx1 as usize, sm_count, gctx1 as usize));
+                    ctxs.push((ctx2 as usize, max_sms - sm_count, gctx2 as usize));
                 }
                 Err((err, func)) => {
                     tracing::error!(
@@ -159,8 +159,8 @@ fn get_green_contexts() -> &'static [(usize, i32)] {
                         sm_count,
                         err
                     );
-                    ctxs.push((0, 0));
-                    ctxs.push((0, 0));
+                    ctxs.push((0, 0, 0));
+                    ctxs.push((0, 0, 0));
                 }
             }
         }
@@ -175,18 +175,27 @@ fn get_green_contexts() -> &'static [(usize, i32)] {
 
 unsafe fn with_green_ctx<F, R>(hook_name: &str, f: F) -> R
 where
-    F: FnOnce() -> R,
+    F: FnOnce(bool, Option<CUgreenCtx>) -> R,
 {
     init_tracing();
     let pool = get_green_contexts();
 
     let mut target_ctx: usize = 0;
+    let mut is_lower_sm_share = false;
+    let mut target_gctx: Option<CUgreenCtx> = None;
 
     if !pool.is_empty() {
         if let Ok(val) = std::env::var("GREEN_CTX") {
             if let Ok(idx) = val.parse::<usize>() {
                 if idx < pool.len() && pool[idx].0 != 0 {
                     target_ctx = pool[idx].0;
+                    target_gctx = Some(pool[idx].2 as CUgreenCtx);
+                    
+                    let other_idx = if idx % 2 == 0 { idx + 1 } else { idx.saturating_sub(1) };
+                    if other_idx < pool.len() {
+                        is_lower_sm_share = pool[idx].1 < pool[other_idx].1;
+                    }
+
                     tracing::info!(
                         "GREEN_CTX router: using green context {} (SMs: {}) [{}]",
                         idx,
@@ -206,7 +215,7 @@ where
         }
     }
 
-    let res = f();
+    let res = f(is_lower_sm_share, target_gctx);
 
     if target_ctx != 0 && !old_ctx.is_null() {
         unsafe {
@@ -243,7 +252,7 @@ cuda_hook! {
         extra: *mut *mut std::ffi::c_void
     ) -> CUresult {
         unsafe {
-            with_green_ctx("cuLaunchKernel", || {
+            with_green_ctx("cuLaunchKernel", |_is_lower_sm_share, _gctx| {
                 let real_fn = *__real_cuLaunchKernel;
                 real_fn(
                     f,
@@ -278,7 +287,7 @@ cuda_hook! {
         extra: *mut *mut std::ffi::c_void
     ) -> CUresult {
         unsafe {
-            with_green_ctx("cuLaunchKernel_ptsz", || {
+            with_green_ctx("cuLaunchKernel_ptsz", |_is_lower_sm_share, _gctx| {
                 let real_fn = *__real_cuLaunchKernel_ptsz;
                 real_fn(
                     f,
@@ -334,9 +343,19 @@ cuda_hook! {
         Flags: ::std::os::raw::c_uint
     ) -> CUresult {
         unsafe {
-            with_green_ctx("cuStreamCreate", || {
-                let real_fn = *__real_cuStreamCreate;
-                real_fn(phStream, Flags)
+            with_green_ctx("cuStreamCreate", |is_lower_sm_share, gctx| {
+                if let Some(ctx) = gctx {
+                    let priority = if !is_lower_sm_share { -1 } else { 0 };
+                    crate::reexports::driver::cuGreenCtxStreamCreate(phStream as _, ctx as _, Flags | 0x1, priority) as _
+                } else {
+                    if !is_lower_sm_share {
+                        let real_fn = *__real_cuStreamCreateWithPriority;
+                        real_fn(phStream, Flags, -1)
+                    } else {
+                        let real_fn = *__real_cuStreamCreate;
+                        real_fn(phStream, Flags)
+                    }
+                }
             })
         }
     }
@@ -349,9 +368,14 @@ cuda_hook! {
         priority: ::std::os::raw::c_int
     ) -> CUresult {
         unsafe {
-            with_green_ctx("cuStreamCreateWithPriority", || {
-                let real_fn = *__real_cuStreamCreateWithPriority;
-                real_fn(phStream, flags, priority)
+            with_green_ctx("cuStreamCreateWithPriority", |is_lower_sm_share, gctx| {
+                let p = if !is_lower_sm_share { -1 } else { 0 };
+                if let Some(ctx) = gctx {
+                    crate::reexports::driver::cuGreenCtxStreamCreate(phStream as _, ctx as _, flags | 0x1, p) as _
+                } else {
+                    let real_fn = *__real_cuStreamCreateWithPriority;
+                    real_fn(phStream, flags, p)
+                }
             })
         }
     }
