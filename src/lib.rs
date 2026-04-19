@@ -8,8 +8,11 @@ static INIT_TRACING: std::sync::Once = std::sync::Once::new();
 
 fn init_tracing() {
     INIT_TRACING.call_once(|| {
+        let filter = tracing_subscriber::EnvFilter::builder()
+            .with_env_var("GREEN_CTX_TRACE")
+            .from_env_lossy();
         let _ = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_env_filter(filter)
             .with_writer(std::io::stderr)
             .try_init();
     });
