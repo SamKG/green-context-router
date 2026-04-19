@@ -1,0 +1,16 @@
+[package]
+name = "green-ctx-router"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ctor = "0.10.0"
+cuda-interposer = "0.2.7"
+cuda-interposer-sys = "0.13.5"
+tracing = "0.1.44"
+
+[build-dependencies]
+cuda-interposer-build = "0.2.3"
