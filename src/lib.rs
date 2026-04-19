@@ -21,57 +21,92 @@ fn init_tracing() {
 
 pub type CUstream = *mut std::ffi::c_void;
 
-static POOL: OnceLock<Vec<usize>> = OnceLock::new();
+static POOL: OnceLock<Vec<(usize, i32)>> = OnceLock::new();
 
-unsafe fn create_green_context(
+unsafe fn create_green_context_pair(
     dev: CUdevice,
     dev_res: &CUdevResource,
     sm_count: u32,
-) -> Result<CUcontext, (cudaError_enum, &'static str)> {
-    let mut num_groups: std::os::raw::c_uint = 1;
-    let mut split_res: CUdevResource = std::mem::zeroed();
+) -> Result<(CUcontext, CUcontext), (cudaError_enum, &'static str)> {
+    let dev_sm = dev_res.__bindgen_anon_1.sm;
+    let align = dev_sm.smCoscheduledAlignment;
+
+    let mut params = [
+        CU_DEV_SM_RESOURCE_GROUP_PARAMS_st {
+            smCount: sm_count,
+            coscheduledSmCount: align,
+            preferredCoscheduledSmCount: align,
+            flags: 0,
+            reserved: [0; 12],
+        },
+        CU_DEV_SM_RESOURCE_GROUP_PARAMS_st {
+            smCount: 0,
+            coscheduledSmCount: align,
+            preferredCoscheduledSmCount: align,
+            flags: CUdevSmResourceGroup_flags::CU_DEV_SM_RESOURCE_GROUP_BACKFILL as u32,
+            reserved: [0; 12],
+        },
+    ];
+
+    let mut split_res: [CUdevResource; 2] = std::mem::zeroed();
     let mut remainder_res: CUdevResource = std::mem::zeroed();
 
-    let res = cuDevSmResourceSplitByCount(
-        &mut split_res,
-        &mut num_groups,
+    let res = cuDevSmResourceSplit(
+        split_res.as_mut_ptr(),
+        2,
         dev_res,
         &mut remainder_res,
         0,
-        sm_count as std::os::raw::c_uint,
+        params.as_mut_ptr(),
     );
     if res != CUDA_SUCCESS {
-        return Err((res, "cuDevSmResourceSplitByCount"));
+        return Err((res, "cuDevSmResourceSplit"));
     }
 
-    let mut desc: CUdevResourceDesc = std::ptr::null_mut();
-    let res = cuDevResourceGenerateDesc(&mut desc, &mut split_res, 1);
+    let mut desc1: CUdevResourceDesc = std::ptr::null_mut();
+    let res = cuDevResourceGenerateDesc(&mut desc1, &mut split_res[0], 1);
     if res != CUDA_SUCCESS {
-        return Err((res, "cuDevResourceGenerateDesc"));
+        return Err((res, "cuDevResourceGenerateDesc (1)"));
     }
 
-    let mut gctx: CUgreenCtx = std::ptr::null_mut();
-    let res = cuGreenCtxCreate(
-        &mut gctx, desc, dev, 1, /* CU_GREEN_CTX_DEFAULT_STREAM */
-    );
+    let mut desc2: CUdevResourceDesc = std::ptr::null_mut();
+    let res = cuDevResourceGenerateDesc(&mut desc2, &mut split_res[1], 1);
     if res != CUDA_SUCCESS {
-        return Err((res, "cuGreenCtxCreate"));
+        return Err((res, "cuDevResourceGenerateDesc (2)"));
     }
 
-    let mut new_ctx: CUcontext = std::ptr::null_mut();
-    let res = cuCtxFromGreenCtx(&mut new_ctx, gctx);
+    let mut gctx1: CUgreenCtx = std::ptr::null_mut();
+    let res = cuGreenCtxCreate(&mut gctx1, desc1, dev, 1);
     if res != CUDA_SUCCESS {
-        return Err((res, "cuCtxFromGreenCtx"));
+        return Err((res, "cuGreenCtxCreate (1)"));
     }
 
-    Ok(new_ctx)
+    let mut gctx2: CUgreenCtx = std::ptr::null_mut();
+    let res = cuGreenCtxCreate(&mut gctx2, desc2, dev, 1);
+    if res != CUDA_SUCCESS {
+        return Err((res, "cuGreenCtxCreate (2)"));
+    }
+
+    let mut new_ctx1: CUcontext = std::ptr::null_mut();
+    let res = cuCtxFromGreenCtx(&mut new_ctx1, gctx1);
+    if res != CUDA_SUCCESS {
+        return Err((res, "cuCtxFromGreenCtx (1)"));
+    }
+
+    let mut new_ctx2: CUcontext = std::ptr::null_mut();
+    let res = cuCtxFromGreenCtx(&mut new_ctx2, gctx2);
+    if res != CUDA_SUCCESS {
+        return Err((res, "cuCtxFromGreenCtx (2)"));
+    }
+
+    Ok((new_ctx1, new_ctx2))
 }
 
-fn get_green_contexts() -> &'static [usize] {
+fn get_green_contexts() -> &'static [(usize, i32)] {
     POOL.get_or_init(|| unsafe {
         let mut dev: CUdevice = 0;
         if cuCtxGetDevice(&mut dev) != CUDA_SUCCESS {
-            return vec![];
+            return Vec::<(usize, i32)>::new();
         }
 
         let mut max_sms: std::os::raw::c_int = 0;
@@ -81,10 +116,10 @@ fn get_green_contexts() -> &'static [usize] {
             dev,
         ) != CUDA_SUCCESS
         {
-            return vec![];
+            return Vec::<(usize, i32)>::new();
         }
 
-        let mut ctxs = Vec::new();
+        let mut ctxs: Vec<(usize, i32)> = Vec::new();
 
         let mut current_ctx: CUcontext = std::ptr::null_mut();
         let _ = cuCtxGetCurrent(&mut current_ctx);
@@ -100,19 +135,22 @@ fn get_green_contexts() -> &'static [usize] {
                 "GREEN_CTX router: cuDeviceGetDevResource failed with error {:?}",
                 res
             );
-            return vec![];
+            return Vec::<(usize, i32)>::new();
         }
 
         let step = 16;
-        for sm_count in (step..=max_sms).step_by(step as usize) {
-            match create_green_context(dev, &dev_res, sm_count as u32) {
-                Ok(ctx) => {
+        for sm_count in (step..=max_sms / 2).step_by(step as usize) {
+            match create_green_context_pair(dev, &dev_res, sm_count as u32) {
+                Ok((ctx1, ctx2)) => {
                     tracing::info!(
-                        "GREEN_CTX router: created green context {} with {} SMs",
+                        "GREEN_CTX router: created green context pair ({}, {}) with SM counts ({}, {})",
                         ctxs.len(),
-                        sm_count
+                        ctxs.len() + 1,
+                        sm_count,
+                        max_sms - sm_count
                     );
-                    ctxs.push(ctx as usize);
+                    ctxs.push((ctx1 as usize, sm_count));
+                    ctxs.push((ctx2 as usize, max_sms - sm_count));
                 }
                 Err((err, func)) => {
                     tracing::error!(
@@ -121,7 +159,8 @@ fn get_green_contexts() -> &'static [usize] {
                         sm_count,
                         err
                     );
-                    ctxs.push(0);
+                    ctxs.push((0, 0));
+                    ctxs.push((0, 0));
                 }
             }
         }
@@ -146,12 +185,12 @@ where
     if !pool.is_empty() {
         if let Ok(val) = std::env::var("GREEN_CTX") {
             if let Ok(idx) = val.parse::<usize>() {
-                if idx < pool.len() && pool[idx] != 0 {
-                    target_ctx = pool[idx];
+                if idx < pool.len() && pool[idx].0 != 0 {
+                    target_ctx = pool[idx].0;
                     tracing::info!(
                         "GREEN_CTX router: using green context {} (SMs: {}) [{}]",
                         idx,
-                        (idx + 1) * 16,
+                        pool[idx].1,
                         hook_name
                     );
                 }
