@@ -87,5 +87,5 @@ The router utilizes the `tracing` framework for logging. By default, it is quiet
 
 Combine it with your application execution like so:
 ```bash
-GREEN_CTX_TRACE=info LD_PRELOAD=/path/to/target/release/libgreen_ctx_router.so GREEN_CTX=4 ./your_cuda_app
+GREEN_CTX_TRACE=info LD_PRELOAD=/path/to/target/release/libgreen_ctx_router.so ./your_cuda_app
 ```
