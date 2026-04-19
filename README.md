@@ -31,7 +31,7 @@ A `Makefile` is included to simplify building the interposer library and the tes
 To run an application with the Green Context Router, set the `LD_PRELOAD` environment variable to point to the compiled shared object:
 
 ```bash
-export LD_PRELOAD=/path/to/green-ctx-router/target/release/libgreen_ctx_router.so
+export LD_PRELOAD=/path/to/green-ctx-router/target/release/libcuda.so.1
 ./your_cuda_application
 ```
 
@@ -75,6 +75,16 @@ The router utilizes the `tracing` framework for logging. By default, it is quiet
 
 Combine it with your application execution like so:
 ```bash
-GREEN_CTX_TRACE=info LD_PRELOAD=/path/to/target/release/libgreen_ctx_router.so ./your_cuda_app
-```X=4 ./your_cuda_app
+GREEN_CTX_TRACE=info LD_LIBRARY_PATH=/path/to/target/release:$LD_LIBRARY_PATH GREEN_CTX=4 ./your_cuda_app
+```
+r debugging:**
+  ```bash
+  export GREEN_CTX_TRACE=debug
+  # or
+  export GREEN_CTX_TRACE=trace
+  ```
+
+Combine it with your application execution like so:
+```bash
+GREEN_CTX_TRACE=info LD_PRELOAD=/path/to/target/release/libcuda.so.1 GREEN_CTX=4 ./your_cuda_app
 ```
