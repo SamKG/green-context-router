@@ -4,6 +4,17 @@ use cuda_interposer_sys::driver_sys::*;
 use std::os::raw::c_uint;
 use std::sync::OnceLock;
 
+static INIT_TRACING: std::sync::Once = std::sync::Once::new();
+
+fn init_tracing() {
+    INIT_TRACING.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .try_init();
+    });
+}
+
 pub type CUstream = *mut std::ffi::c_void;
 
 static POOL: OnceLock<Vec<usize>> = OnceLock::new();
@@ -29,11 +40,18 @@ fn get_green_contexts() -> &'static [usize] {
 
         let mut current_ctx: CUcontext = std::ptr::null_mut();
         let _ = cuCtxGetCurrent(&mut current_ctx);
-        
+
         let mut dev_res: CUdevResource = std::mem::zeroed();
-        let res = cuDeviceGetDevResource(dev, &mut dev_res, CUdevResourceType::CU_DEV_RESOURCE_TYPE_SM);
+        let res = cuDeviceGetDevResource(
+            dev,
+            &mut dev_res,
+            CUdevResourceType::CU_DEV_RESOURCE_TYPE_SM,
+        );
         if res != CUDA_SUCCESS {
-            println!("GREEN_CTX router: cuDeviceGetDevResource failed with error {:?}", res);
+            tracing::error!(
+                "GREEN_CTX router: cuDeviceGetDevResource failed with error {:?}",
+                res
+            );
             return vec![];
         }
 
@@ -56,26 +74,44 @@ fn get_green_contexts() -> &'static [usize] {
                 let res = cuDevResourceGenerateDesc(&mut desc, &mut split_res, 1);
                 if res == CUDA_SUCCESS {
                     let mut gctx: CUgreenCtx = std::ptr::null_mut();
-                    let res = cuGreenCtxCreate(&mut gctx, desc, dev, 1 /* CU_GREEN_CTX_DEFAULT_STREAM */);
+                    let res = cuGreenCtxCreate(
+                        &mut gctx, desc, dev, 1, /* CU_GREEN_CTX_DEFAULT_STREAM */
+                    );
                     if res == CUDA_SUCCESS {
                         let mut new_ctx: CUcontext = std::ptr::null_mut();
                         let res = cuCtxFromGreenCtx(&mut new_ctx, gctx);
                         if res == CUDA_SUCCESS {
                             ctxs.push(new_ctx as usize);
                         } else {
-                            println!("GREEN_CTX router: cuCtxFromGreenCtx for SM count {} failed {:?}", sm_count, res);
+                            tracing::error!(
+                                "GREEN_CTX router: cuCtxFromGreenCtx for SM count {} failed {:?}",
+                                sm_count,
+                                res
+                            );
                             ctxs.push(0);
                         }
                     } else {
-                        println!("GREEN_CTX router: cuGreenCtxCreate for SM count {} failed {:?}", sm_count, res);
+                        tracing::error!(
+                            "GREEN_CTX router: cuGreenCtxCreate for SM count {} failed {:?}",
+                            sm_count,
+                            res
+                        );
                         ctxs.push(0);
                     }
                 } else {
-                    println!("GREEN_CTX router: cuDevResourceGenerateDesc for SM count {} failed {:?}", sm_count, res);
+                    tracing::error!(
+                        "GREEN_CTX router: cuDevResourceGenerateDesc for SM count {} failed {:?}",
+                        sm_count,
+                        res
+                    );
                     ctxs.push(0);
                 }
             } else {
-                println!("GREEN_CTX router: cuDevSmResourceSplitByCount for SM count {} failed {:?}", sm_count, res);
+                tracing::error!(
+                    "GREEN_CTX router: cuDevSmResourceSplitByCount for SM count {} failed {:?}",
+                    sm_count,
+                    res
+                );
                 ctxs.push(0);
             }
         }
@@ -92,7 +128,8 @@ install_hooks!();
 
 cuda_hook! {
     pub unsafe extern "C" fn cuInit(Flags: c_uint) -> CUresult {
-        println!("GREEN_CTX router: cuInit intercepted");
+        init_tracing();
+        tracing::debug!("GREEN_CTX router: cuInit intercepted");
         let real_fn = *__real_cuInit;
         real_fn(Flags)
     }
@@ -113,6 +150,7 @@ cuda_hook! {
         extra: *mut *mut std::ffi::c_void
     ) -> CUresult {
         unsafe {
+            init_tracing();
             let pool = get_green_contexts();
 
             let mut target_ctx: usize = 0;
@@ -122,7 +160,7 @@ cuda_hook! {
                     if let Ok(idx) = val.parse::<usize>() {
                         if idx < pool.len() && pool[idx] != 0 {
                             target_ctx = pool[idx];
-                            println!("GREEN_CTX router: using green context {} (SMs: {})", idx, idx + 1);
+                            tracing::info!("GREEN_CTX router: using green context {} (SMs: {})", idx, idx + 1);
                         }
                     }
                 }
@@ -160,34 +198,35 @@ cuda_hook! {
         extra: *mut *mut std::ffi::c_void
     ) -> CUresult {
         unsafe {
+            init_tracing();
             let pool = get_green_contexts();
-            
+
             let mut target_ctx: usize = 0;
-            
+
             if !pool.is_empty() {
                 if let Ok(val) = std::env::var("GREEN_CTX") {
                     if let Ok(idx) = val.parse::<usize>() {
                         if idx < pool.len() && pool[idx] != 0 {
                             target_ctx = pool[idx];
-                            println!("GREEN_CTX router: using green context {} (SMs: {}) [ptsz]", idx, idx + 1);
+                            tracing::info!("GREEN_CTX router: using green context {} (SMs: {}) [ptsz]", idx, idx + 1);
                         }
                     }
                 }
             }
-            
+
             let mut old_ctx: CUcontext = std::ptr::null_mut();
             if target_ctx != 0 {
                 let _ = cuCtxGetCurrent(&mut old_ctx);
                 let _ = cuCtxSetCurrent(target_ctx as CUcontext);
             }
-            
+
             let real_fn = *__real_cuLaunchKernel_ptsz;
             let res = real_fn(f, grid_dim_x, grid_dim_y, grid_dim_z, block_dim_x, block_dim_y, block_dim_z, shared_mem_bytes, h_stream, kernel_params, extra);
-            
+
             if target_ctx != 0 && !old_ctx.is_null() {
                 let _ = cuCtxSetCurrent(old_ctx);
             }
-            
+
             res
         }
     }
@@ -201,6 +240,7 @@ cuda_hook! {
         extra: *mut *mut std::ffi::c_void
     ) -> CUresult {
         unsafe {
+            init_tracing();
             let pool = get_green_contexts();
             let mut target_ctx: usize = 0;
             if !pool.is_empty() {
@@ -208,7 +248,7 @@ cuda_hook! {
                     if let Ok(idx) = val.parse::<usize>() {
                         if idx < pool.len() && pool[idx] != 0 {
                             target_ctx = pool[idx];
-                            println!("GREEN_CTX router: using green context {} (SMs: {}) [Ex]", idx, idx + 1);
+                            tracing::info!("GREEN_CTX router: using green context {} (SMs: {}) [Ex]", idx, idx + 1);
                         }
                     }
                 }
@@ -231,6 +271,7 @@ cuda_hook! {
         extra: *mut *mut std::ffi::c_void
     ) -> CUresult {
         unsafe {
+            init_tracing();
             let pool = get_green_contexts();
             let mut target_ctx: usize = 0;
             if !pool.is_empty() {
@@ -238,7 +279,7 @@ cuda_hook! {
                     if let Ok(idx) = val.parse::<usize>() {
                         if idx < pool.len() && pool[idx] != 0 {
                             target_ctx = pool[idx];
-                            println!("GREEN_CTX router: using green context {} (SMs: {}) [Ex_ptsz]", idx, idx + 1);
+                            tracing::info!("GREEN_CTX router: using green context {} (SMs: {}) [Ex_ptsz]", idx, idx + 1);
                         }
                     }
                 }

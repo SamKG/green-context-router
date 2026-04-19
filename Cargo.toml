@@ -11,6 +11,7 @@ ctor = "0.10.0"
 cuda-interposer = "0.2.7"
 cuda-interposer-sys = "0.13.5"
 tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 
 [build-dependencies]
 cuda-interposer-build = "0.2.3"
