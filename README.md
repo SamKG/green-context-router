@@ -3,7 +3,7 @@
 This project provides a dynamic router for CUDA Green Contexts using an `LD_PRELOAD` interposer. 
 
 ## 1. Goal of the Project
-The primary goal is to provide a dynamic routing mechanism for CUDA kernel execution by allocating specific Streaming Multiprocessor (SM) partitions via CUDA Green Contexts (available in CUDA 12.4+). At startup (e.g., when `cuInit` is called or a context is required), the router creates a pool of all possible Green Contexts—ranging from 1 SM to the device's maximum available SM count.
+The primary goal is to provide a dynamic routing mechanism for CUDA kernel execution by allocating specific Streaming Multiprocessor (SM) partitions via CUDA Green Contexts (available in CUDA 12.4+). At startup (e.g., when `cuInit` is called or a context is required), the router creates a pool of all possible Green Contexts (in increments of 8) ranging from 8 SM to the device's maximum available SM count.
 
 When downstream applications launch a kernel (by calling `cuLaunchKernel`, `cuLaunchKernelEx`, etc.), the router intercepts the call and reads the `GREEN_CTX` environment variable to determine which Green Context to swap in for the duration of the kernel launch.
 
@@ -75,6 +75,6 @@ The router utilizes the `tracing` framework for logging. By default, it is quiet
 
 Combine it with your application execution like so:
 ```bash
-GREEN_CTX_TRACE=info LD_PRELOAD=/path/to/target/release/libgreen_ctx_router.so GREEN_CTX=4 ./your_cuda_app
+GREEN_CTX_TRACE=info LD_PRELOAD=/path/to/target/release/libgreen_ctx_router.so ./your_cuda_app
 ```X=4 ./your_cuda_app
 ```
