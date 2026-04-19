@@ -105,7 +105,14 @@ fn get_green_contexts() -> &'static [usize] {
 
         for sm_count in 1..=max_sms {
             match create_green_context(dev, &dev_res, sm_count as u32) {
-                Ok(ctx) => ctxs.push(ctx as usize),
+                Ok(ctx) => {
+                    tracing::info!(
+                        "GREEN_CTX router: created green context {} with {} SMs",
+                        sm_count - 1,
+                        sm_count
+                    );
+                    ctxs.push(ctx as usize);
+                }
                 Err((err, func)) => {
                     tracing::error!(
                         "GREEN_CTX router: {} for SM count {} failed {:?}",
