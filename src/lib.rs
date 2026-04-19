@@ -329,3 +329,33 @@ cuda_hook! {
         }
     }
 }
+
+cuda_hook! {
+    pub unsafe extern "C" fn cuStreamCreate(
+        phStream: *mut CUstream,
+        Flags: ::std::os::raw::c_uint
+    ) -> CUresult {
+        unsafe {
+            with_green_ctx("cuStreamCreate", || {
+                let real_fn = *__real_cuStreamCreate;
+                real_fn(phStream, Flags)
+            })
+        }
+    }
+}
+
+cuda_hook! {
+    pub unsafe extern "C" fn cuStreamCreateWithPriority(
+        phStream: *mut CUstream,
+        flags: ::std::os::raw::c_uint,
+        priority: ::std::os::raw::c_int
+    ) -> CUresult {
+        unsafe {
+            with_green_ctx("cuStreamCreateWithPriority", || {
+                let real_fn = *__real_cuStreamCreateWithPriority;
+                real_fn(phStream, flags, priority)
+            })
+        }
+    }
+}
+
