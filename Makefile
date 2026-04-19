@@ -6,6 +6,8 @@ hooks:
 	cargo build --release
 	cp target/release/libgreen_ctx_router.so target/release/libcuda.so
 	cp target/release/libgreen_ctx_router.so target/release/libcuda.so.1
+	patchelf --set-soname libcuda.so target/release/libcuda.so
+	patchelf --set-soname libcuda.so.1 target/release/libcuda.so.1
 
 tests:
 	mkdir -p tests/bin
