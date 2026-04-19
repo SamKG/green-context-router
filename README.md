@@ -3,9 +3,9 @@
 This project provides a dynamic router for CUDA Green Contexts using an `LD_PRELOAD` interposer. 
 
 ## 1. Goal of the Project
-The primary goal is to provide a dynamic routing mechanism for CUDA kernel execution by allocating specific Streaming Multiprocessor (SM) partitions via CUDA Green Contexts (available in CUDA 12.4+). At startup (e.g., when `cuInit` is called or a context is required), the router creates a pool of all possible Green Contexts (in increments of 8) ranging from 8 SM to the device's maximum available SM count.
+The primary goal is to provide a dynamic routing mechanism for CUDA kernel execution by allocating specific Streaming Multiprocessor (SM) partitions via CUDA Green Contexts (available in CUDA 12.4+). At startup (e.g., when `cuInit` is called or a context is required), the router creates a pool of all possible Green Contexts (in increments of 8) ranging from 8 SMs up to the device's maximum available SM count.
 
-When downstream applications launch a kernel (by calling `cuLaunchKernel`, `cuLaunchKernelEx`, etc.), the router intercepts the call and reads the `GREEN_CTX` environment variable to determine which Green Context to swap in for the duration of the kernel launch.
+When downstream applications create a stream (by calling `cuStreamCreate` or `cuStreamCreateWithPriority`), the router intercepts the call and reads the `GREEN_CTX` environment variable to determine which Green Context to bind the stream to. Any kernel subsequently launched on this stream will be physically restricted to that Green Context's hardware partition.
 
 ## 2. Building for Code and Tests
 
@@ -31,7 +31,7 @@ A `Makefile` is included to simplify building the interposer library and the tes
 To run an application with the Green Context Router, set the `LD_PRELOAD` environment variable to point to the compiled shared object:
 
 ```bash
-export LD_PRELOAD=/path/to/green-ctx-router/target/release/libcuda.so.1
+export LD_PRELOAD=/path/to/green-ctx-router/target/release/libgreen_ctx_router.so:$LD_PRELOAD
 ./your_cuda_application
 ```
 
@@ -39,29 +39,41 @@ export LD_PRELOAD=/path/to/green-ctx-router/target/release/libcuda.so.1
 
 The `GREEN_CTX` environment variable determines the index of the Green Context pool (0-based) to use. Contexts are created in co-scheduled pairs. Index `0` corresponds to `8` SMs, index `1` corresponds to the remainder of the SMs (e.g., `124` SMs on a 132-SM GPU). Index `2` corresponds to `16` SMs, index `3` corresponds to the remainder of the SMs, and so on.
 
-To use the router efficiently, downstream applications should dynamically set the `GREEN_CTX` environment variable immediately before the kernel launch. For instance, in PyTorch, you can do this before triggering a specific model operation:
+To use the router efficiently, downstream applications should dynamically set the `GREEN_CTX` environment variable immediately before stream creation. For instance, in PyTorch, you can use `ctypes` to intercept the native C-call and bind the PyTorch stream to the router:
 
 ```python
 import os
 import torch
+import ctypes
+
+cudart = ctypes.CDLL("libcudart.so")
+cudaStreamCreate = cudart.cudaStreamCreate
+cudaStreamCreate.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+cudaStreamCreate.restype = ctypes.c_int
+
+def create_green_stream(green_ctx_id):
+    os.environ["GREEN_CTX"] = str(green_ctx_id)
+    stream_ptr = ctypes.c_void_p()
+    res = cudaStreamCreate(ctypes.byref(stream_ptr))
+    if res != 0:
+        raise RuntimeError(f"cudaStreamCreate failed with error {res}")
+    return torch.cuda.ExternalStream(stream_ptr.value)
 
 # ... setup your model ...
 
-# Route the next operations to a Green Context configured with 16 SMs (index 2)
-os.environ["GREEN_CTX"] = "2"
+# Create a stream explicitly bound to exactly 16 SMs (index 2)
+stream16 = create_green_stream(2)
 
-# Perform the operation
-output = model(input_tensor)
-
-# Optionally unset or change it back for subsequent operations
-os.environ["GREEN_CTX"] = "0"
+# Perform operations on this stream, naturally restricting execution to 16 SMs
+with torch.cuda.stream(stream16):
+    output = model(input_tensor)
 ```
 
 ## 5. Using the Debugging Environment Variable
 
 The router utilizes the `tracing` framework for logging. By default, it is quiet, but you can enable informative output by setting the `GREEN_CTX_TRACE` environment variable.
 
-- **For general info (like context mapping on each kernel launch):**
+- **For general info (like context mapping on stream creation):**
   ```bash
   export GREEN_CTX_TRACE=info
   ```
@@ -75,16 +87,5 @@ The router utilizes the `tracing` framework for logging. By default, it is quiet
 
 Combine it with your application execution like so:
 ```bash
-GREEN_CTX_TRACE=info LD_LIBRARY_PATH=/path/to/target/release:$LD_LIBRARY_PATH GREEN_CTX=4 ./your_cuda_app
-```
-r debugging:**
-  ```bash
-  export GREEN_CTX_TRACE=debug
-  # or
-  export GREEN_CTX_TRACE=trace
-  ```
-
-Combine it with your application execution like so:
-```bash
-GREEN_CTX_TRACE=info LD_PRELOAD=/path/to/target/release/libcuda.so.1 GREEN_CTX=4 ./your_cuda_app
+GREEN_CTX_TRACE=info LD_PRELOAD=/path/to/target/release/libgreen_ctx_router.so GREEN_CTX=4 ./your_cuda_app
 ```
