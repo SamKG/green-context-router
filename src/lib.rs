@@ -103,12 +103,13 @@ fn get_green_contexts() -> &'static [usize] {
             return vec![];
         }
 
-        for sm_count in 1..=max_sms {
+        let step = 16;
+        for sm_count in (step..=max_sms).step_by(step as usize) {
             match create_green_context(dev, &dev_res, sm_count as u32) {
                 Ok(ctx) => {
                     tracing::info!(
                         "GREEN_CTX router: created green context {} with {} SMs",
-                        sm_count - 1,
+                        ctxs.len(),
                         sm_count
                     );
                     ctxs.push(ctx as usize);
@@ -150,7 +151,7 @@ where
                     tracing::info!(
                         "GREEN_CTX router: using green context {} (SMs: {}) [{}]",
                         idx,
-                        idx + 1,
+                        (idx + 1) * 16,
                         hook_name
                     );
                 }

@@ -37,7 +37,7 @@ export LD_PRELOAD=/path/to/green-ctx-router/target/release/libgreen_ctx_router.s
 
 ## 4. Setting Environment Variables in Downstream Code
 
-The `GREEN_CTX` environment variable determines the index of the Green Context pool (0-based) to use. Index `0` corresponds to `1` SM, index `1` corresponds to `2` SMs, and so on.
+The `GREEN_CTX` environment variable determines the index of the Green Context pool (0-based) to use. Index `0` corresponds to `16` SMs, index `1` corresponds to `32` SMs, and so on.
 
 To use the router efficiently, downstream applications should dynamically set the `GREEN_CTX` environment variable immediately before the kernel launch. For instance, in PyTorch, you can do this before triggering a specific model operation:
 
@@ -76,4 +76,5 @@ The router utilizes the `tracing` framework for logging. By default, it is quiet
 Combine it with your application execution like so:
 ```bash
 GREEN_CTX_TRACE=info LD_PRELOAD=/path/to/target/release/libgreen_ctx_router.so GREEN_CTX=4 ./your_cuda_app
+```X=4 ./your_cuda_app
 ```
