@@ -138,7 +138,7 @@ fn get_green_contexts() -> &'static [(usize, i32)] {
             return Vec::<(usize, i32)>::new();
         }
 
-        let step = 16;
+        let step = 8;
         for sm_count in (step..=max_sms / 2).step_by(step as usize) {
             match create_green_context_pair(dev, &dev_res, sm_count as u32) {
                 Ok((ctx1, ctx2)) => {

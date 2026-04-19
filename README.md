@@ -37,7 +37,7 @@ export LD_PRELOAD=/path/to/green-ctx-router/target/release/libgreen_ctx_router.s
 
 ## 4. Setting Environment Variables in Downstream Code
 
-The `GREEN_CTX` environment variable determines the index of the Green Context pool (0-based) to use. Index `0` corresponds to `16` SMs, index `1` corresponds to `32` SMs, and so on.
+The `GREEN_CTX` environment variable determines the index of the Green Context pool (0-based) to use. Contexts are created in co-scheduled pairs. Index `0` corresponds to `8` SMs, index `1` corresponds to the remainder of the SMs (e.g., `124` SMs on a 132-SM GPU). Index `2` corresponds to `16` SMs, index `3` corresponds to the remainder of the SMs, and so on.
 
 To use the router efficiently, downstream applications should dynamically set the `GREEN_CTX` environment variable immediately before the kernel launch. For instance, in PyTorch, you can do this before triggering a specific model operation:
 
@@ -47,8 +47,8 @@ import torch
 
 # ... setup your model ...
 
-# Route the next operations to a Green Context configured with 5 SMs (index 4)
-os.environ["GREEN_CTX"] = "4"
+# Route the next operations to a Green Context configured with 16 SMs (index 2)
+os.environ["GREEN_CTX"] = "2"
 
 # Perform the operation
 output = model(input_tensor)
