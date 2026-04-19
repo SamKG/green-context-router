@@ -306,10 +306,9 @@ cuda_hook! {
         extra: *mut *mut std::ffi::c_void
     ) -> CUresult {
         unsafe {
-            with_green_ctx("cuLaunchKernelEx", || {
-                let real_fn = *__real_cuLaunchKernelEx;
-                real_fn(config, f, kernel_params, extra)
-            })
+            init_tracing();
+            let real_fn = *__real_cuLaunchKernelEx;
+            real_fn(config, f, kernel_params, extra)
         }
     }
 }
@@ -322,10 +321,9 @@ cuda_hook! {
         extra: *mut *mut std::ffi::c_void
     ) -> CUresult {
         unsafe {
-            with_green_ctx("cuLaunchKernelEx_ptsz", || {
-                let real_fn = *__real_cuLaunchKernelEx_ptsz;
-                real_fn(config, f, kernel_params, extra)
-            })
+            init_tracing();
+            let real_fn = *__real_cuLaunchKernelEx_ptsz;
+            real_fn(config, f, kernel_params, extra)
         }
     }
 }

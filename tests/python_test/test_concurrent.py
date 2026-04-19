@@ -50,12 +50,10 @@ def run_test():
     
     start = time.perf_counter()
     
-    os.environ["GREEN_CTX"] = "0"
     with torch.cuda.stream(stream1_green):
         for _ in range(10):
             torch.matmul(a, b)
             
-    os.environ["GREEN_CTX"] = "1"
     with torch.cuda.stream(stream2_green):
         for _ in range(10):
             torch.matmul(a, b)
